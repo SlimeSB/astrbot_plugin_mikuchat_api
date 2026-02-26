@@ -10,7 +10,7 @@ import random
 import time
 import threading
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from .mikuchat_html_render import template_to_pic
@@ -58,7 +58,8 @@ VOLATILITY_MAX_RATIO = 1.5       # 波动率最高为基值的150%
 
 # 市场波动参数
 UPDATE_INTERVAL = 120  # 2分钟更新一次
-TRANSACTION_FEE = 0.01  # 1% 交易手续费
+BUY_FEE = 0.001  # 0.1% 买入手续费
+SELL_FEE = 0.02  # 2% 卖出手续费
 
 # 随机事件参数
 EVENT_TRIGGER_PROBABILITY = 0.15  # 15%概率触发
@@ -80,7 +81,14 @@ last_update_time = time.time()
 # 用户资产数据
 user_assets: Dict[str, Dict] = {}  # {user_id: {coin: amount}}
 user_balance: Dict[str, float] = {}  # {user_id: balance}
-user_orders: Dict[str, List] = {}  # {user_id: [order1, order2, ...]}
+
+# 挂单数据存储
+# {user_id: [{
+#     'order_id': str, 'type': 'buy'/'sell', 'coin': str, 'amount': float, 
+#     'price': float, 'created_at': datetime, 'expires_at': datetime
+# }]}
+pending_orders: Dict[str, List[Dict]] = {}
+ORDER_EXPIRY_HOURS = 1  # 挂单有效期1小时
 
 # 群聊活跃度记录 {group_umo: last_message_timestamp}
 group_last_activity: dict[str, float] = {}
@@ -97,22 +105,25 @@ _plugin_context: Optional[Context] = None
 def market_update_worker():
     """市场更新工作线程"""
     global market_update_running
-    
+
     while market_update_running:
         try:
             # 等待更新间隔
             time.sleep(UPDATE_INTERVAL)
-            
+
             # 执行市场更新
             with market_update_lock:
                 update_volatility()
                 update_market_prices()
-                
+
             logger.info(f"[Market] 自动更新完成 - 时间: {datetime.now().strftime('%H:%M:%S')}")
-            
+
+            # 检查并执行挂单
+            check_and_execute_pending_orders()
+
             # 尝试触发随机事件
             try_trigger_random_event()
-            
+
         except Exception as e:
             logger.error(f"[Market] 自动更新出错: {e}")
             time.sleep(10)  # 出错后等待10秒再重试
@@ -477,8 +488,82 @@ def init_user(user_id: str):
         user_assets[user_id] = {coin: 0.0 for coin in COINS}
     if user_id not in user_balance:
         user_balance[user_id] = 10000.0  # 初始资金10000
-    if user_id not in user_orders:
-        user_orders[user_id] = []
+    if user_id not in pending_orders:
+        pending_orders[user_id] = []
+
+
+def init_pending_orders(user_id: str):
+    """初始化用户挂单列表"""
+    if user_id not in pending_orders:
+        pending_orders[user_id] = []
+
+
+def create_order_id() -> str:
+    """生成唯一订单号"""
+    import uuid
+    return uuid.uuid4().hex[:12].upper()
+
+
+def check_and_execute_pending_orders():
+    """检查并执行符合条件的挂单"""
+    global pending_orders
+
+    current_time = datetime.now()
+
+    for user_id, orders in list(pending_orders.items()):
+        if not orders:
+            continue
+
+        # 清理过期订单
+        expired_orders = [o for o in orders if o['expires_at'] < current_time]
+        for order in expired_orders:
+            orders.remove(order)
+            logger.info(f"[Order] 订单过期: {order['order_id']} ({order['type']} {order['coin']})")
+
+        # 检查可成交订单
+        remaining_orders = []
+        for order in orders:
+            coin = order['coin']
+            current_price = get_coin_price(coin)
+
+            if order['type'] == 'buy':
+                # 买入挂单: 市场价 <= 挂单价格时成交
+                if current_price <= order['price']:
+                    # 检查资金是否足够
+                    total_cost = order['amount'] * order['price']
+                    fee = total_cost * BUY_FEE
+                    total_with_fee = total_cost + fee
+
+                    if user_balance.get(user_id, 0) >= total_with_fee:
+                        # 执行买入
+                        user_balance[user_id] -= total_with_fee
+                        user_assets[user_id][coin] += order['amount']
+                        logger.info(f"[Order] 买入挂单成交: {order['order_id']} {order['coin']} x{order['amount']} @ {order['price']}")
+                    else:
+                        # 资金不足，销毁订单
+                        logger.warning(f"[Order] 买入挂单资金不足，销毁: {order['order_id']}")
+                else:
+                    remaining_orders.append(order)
+            else:  # sell
+                # 卖出挂单: 市场价 >= 挂单价格时成交
+                if current_price >= order['price']:
+                    # 检查币种是否足够
+                    if user_assets[user_id].get(coin, 0) >= order['amount']:
+                        # 执行卖出
+                        total_income = order['amount'] * order['price']
+                        fee = total_income * SELL_FEE
+                        net_income = total_income - fee
+
+                        user_assets[user_id][coin] -= order['amount']
+                        user_balance[user_id] += net_income
+                        logger.info(f"[Order] 卖出挂单成交: {order['order_id']} {order['coin']} x{order['amount']} @ {order['price']}")
+                    else:
+                        # 币种不足，销毁订单
+                        logger.warning(f"[Order] 卖出挂单币种不足，销毁: {order['order_id']}")
+                else:
+                    remaining_orders.append(order)
+
+        pending_orders[user_id] = remaining_orders
 
 
 def update_volatility():
@@ -568,99 +653,166 @@ async def bi_price(event: AstrMessageEvent, coin: str = ""):
 
 
 async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float = 0.0):
-    """买入虚拟币"""
+    """买入虚拟币
+    price=0: 市价买入，立即成交
+    price>0: 限价买入，价格必须低于市场价，形成挂单
+    """
     user_id = str(event.get_sender_id())
     init_user(user_id)
-    
+    init_pending_orders(user_id)
+
     coin = coin.upper()
     if coin not in COINS:
         yield event.plain_result(f"❌ 不支持的币种: {coin}")
         return
-    
+
     current_price = get_coin_price(coin)
-    
-    # 市价单
+
+    # 市价买入（price=0或不填）
     if price == 0.0:
         price = current_price
-    
-    total_cost = amount * price
-    fee = total_cost * TRANSACTION_FEE  # 计算手续费
-    total_with_fee = total_cost + fee
-    
-    if user_balance[user_id] < total_with_fee:
-        yield event.plain_result(f"❌ 余额不足！需要 {total_with_fee:.2f}（含手续费 {fee:.2f}），当前余额: {user_balance[user_id]:.2f}")
-        return
-    
-    # 执行交易（扣除手续费）
-    user_balance[user_id] -= total_with_fee
-    user_assets[user_id][coin] += amount
-    
-    result = f"✅ 买入成功！\n"
-    result += f"━━━━━━━━━━━━━━\n"
-    result += f"币种: {coin}\n"
-    result += f"数量: {amount:.2f}\n"
-    result += f"价格: {price:.2f}\n"
-    result += f"交易额: {total_cost:.2f}\n"
-    result += f"手续费: {fee:.2f} ({TRANSACTION_FEE*100:.1f}%)\n"
-    result += f"总支出: {total_with_fee:.2f}\n"
-    result += f"余额: {user_balance[user_id]:.2f}"
-    
-    yield event.plain_result(result)
+        total_cost = amount * price
+        fee = total_cost * BUY_FEE
+        total_with_fee = total_cost + fee
+
+        if user_balance[user_id] < total_with_fee:
+            yield event.plain_result(f"❌ 余额不足！需要 {total_with_fee:.2f}（含手续费 {fee:.2f}），当前余额: {user_balance[user_id]:.2f}")
+            return
+
+        # 执行交易
+        user_balance[user_id] -= total_with_fee
+        user_assets[user_id][coin] += amount
+
+        result = f"✅ 市价买入成功！\n"
+        result += f"━━━━━━━━━━━━━━\n"
+        result += f"币种: {coin}\n"
+        result += f"数量: {amount:.2f}\n"
+        result += f"成交价格: {price:.2f}\n"
+        result += f"交易额: {total_cost:.2f}\n"
+        result += f"买入手续费: {fee:.2f} ({BUY_FEE*100:.1f}%)\n"
+        result += f"总支出: {total_with_fee:.2f}\n"
+        result += f"余额: {user_balance[user_id]:.2f}"
+        yield event.plain_result(result)
+    else:
+        # 限价买入，价格必须低于市场价
+        if price >= current_price:
+            yield event.plain_result(f"❌ 限价买入价格必须低于当前市场价 {current_price:.2f}")
+            return
+
+        # 创建挂单（不扣费，成交时检查）
+        order_id = create_order_id()
+        order = {
+            'order_id': order_id,
+            'type': 'buy',
+            'coin': coin,
+            'amount': amount,
+            'price': price,
+            'created_at': datetime.now(),
+            'expires_at': datetime.now() + timedelta(hours=ORDER_EXPIRY_HOURS)
+        }
+        pending_orders[user_id].append(order)
+
+        result = f"📋 买入挂单创建成功！\n"
+        result += f"━━━━━━━━━━━━━━\n"
+        result += f"订单号: {order_id}\n"
+        result += f"币种: {coin}\n"
+        result += f"数量: {amount:.2f}\n"
+        result += f"挂单价格: {price:.2f}\n"
+        result += f"当前市场价: {current_price:.2f}\n"
+        result += f"预计交易额: {amount * price:.2f}\n"
+        result += f"预计手续费: {amount * price * BUY_FEE:.2f}\n"
+        result += f"有效期: 1小时\n"
+        result += f"💡 当市场价 ≤ {price:.2f} 时自动成交"
+        yield event.plain_result(result)
 
 
 async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: float = 0.0):
-    """卖出虚拟币"""
+    """卖出虚拟币
+    price=0: 市价卖出，立即成交
+    price>0: 限价卖出，价格必须高于市场价，形成挂单
+    """
     user_id = str(event.get_sender_id())
     init_user(user_id)
-    
+    init_pending_orders(user_id)
+
     coin = coin.upper()
     if coin not in COINS:
         yield event.plain_result(f"❌ 不支持的币种: {coin}")
         return
-    
-    if user_assets[user_id][coin] < amount:
-        yield event.plain_result(f"❌ {coin} 持有量不足！当前持有: {user_assets[user_id][coin]:.2f}")
-        return
-    
+
     current_price = get_coin_price(coin)
-    
-    # 市价单
+
+    # 市价卖出（price=0或不填）
     if price == 0.0:
+        if user_assets[user_id][coin] < amount:
+            yield event.plain_result(f"❌ {coin} 持有量不足！当前持有: {user_assets[user_id][coin]:.2f}")
+            return
+
         price = current_price
-    
-    total_income = amount * price
-    fee = total_income * TRANSACTION_FEE  # 计算手续费
-    net_income = total_income - fee
-    
-    # 执行交易（扣除手续费）
-    user_assets[user_id][coin] -= amount
-    user_balance[user_id] += net_income
-    
-    result = f"✅ 卖出成功！\n"
-    result += f"━━━━━━━━━━━━━━\n"
-    result += f"币种: {coin}\n"
-    result += f"数量: {amount:.2f}\n"
-    result += f"价格: {price:.2f}\n"
-    result += f"交易额: {total_income:.2f}\n"
-    result += f"手续费: {fee:.2f} ({TRANSACTION_FEE*100:.1f}%)\n"
-    result += f"净收入: {net_income:.2f}\n"
-    result += f"余额: {user_balance[user_id]:.2f}"
-    
-    yield event.plain_result(result)
+        total_income = amount * price
+        fee = total_income * SELL_FEE
+        net_income = total_income - fee
+
+        # 执行交易
+        user_assets[user_id][coin] -= amount
+        user_balance[user_id] += net_income
+
+        result = f"✅ 市价卖出成功！\n"
+        result += f"━━━━━━━━━━━━━━\n"
+        result += f"币种: {coin}\n"
+        result += f"数量: {amount:.2f}\n"
+        result += f"成交价格: {price:.2f}\n"
+        result += f"交易额: {total_income:.2f}\n"
+        result += f"卖出手续费: {fee:.2f} ({SELL_FEE*100:.1f}%)\n"
+        result += f"净收入: {net_income:.2f}\n"
+        result += f"余额: {user_balance[user_id]:.2f}"
+        yield event.plain_result(result)
+    else:
+        # 限价卖出，价格必须高于市场价
+        if price <= current_price:
+            yield event.plain_result(f"❌ 限价卖出价格必须高于当前市场价 {current_price:.2f}")
+            return
+
+        # 创建挂单（不扣币，成交时检查）
+        order_id = create_order_id()
+        order = {
+            'order_id': order_id,
+            'type': 'sell',
+            'coin': coin,
+            'amount': amount,
+            'price': price,
+            'created_at': datetime.now(),
+            'expires_at': datetime.now() + timedelta(hours=ORDER_EXPIRY_HOURS)
+        }
+        pending_orders[user_id].append(order)
+
+        result = f"📋 卖出挂单创建成功！\n"
+        result += f"━━━━━━━━━━━━━━\n"
+        result += f"订单号: {order_id}\n"
+        result += f"币种: {coin}\n"
+        result += f"数量: {amount:.2f}\n"
+        result += f"挂单价格: {price:.2f}\n"
+        result += f"当前市场价: {current_price:.2f}\n"
+        result += f"预计交易额: {amount * price:.2f}\n"
+        result += f"预计手续费: {amount * price * SELL_FEE:.2f}\n"
+        result += f"有效期: 1小时\n"
+        result += f"💡 当市场价 ≥ {price:.2f} 时自动成交"
+        yield event.plain_result(result)
 
 
 async def bi_assets(event: AstrMessageEvent):
-    """查看用户资产"""
+    """查看用户资产和挂单"""
     user_id = str(event.get_sender_id())
     init_user(user_id)
-    
+    init_pending_orders(user_id)
+
     total_assets = get_user_total_assets(user_id)
-    
+
     result = f"💼 您的资产总览\n"
     result += f"━━━━━━━━━━━━━━\n"
     result += f"💰 现金余额: {user_balance[user_id]:.2f}\n"
     result += f"📊 总资产: {total_assets:.2f}\n\n"
-    
+
     result += f"🪙 虚拟币持仓:\n"
     has_holdings = False
     for coin in COINS:
@@ -670,10 +822,28 @@ async def bi_assets(event: AstrMessageEvent):
             value = amount * price
             result += f"• {coin}: {amount:.2f} 枚 (价值: {value:.2f})\n"
             has_holdings = True
-    
+
     if not has_holdings:
         result += "暂无持仓\n"
-    
+
+    # 显示挂单
+    result += f"\n📋 当前挂单:\n"
+    orders = pending_orders.get(user_id, [])
+    active_orders = [o for o in orders if o['expires_at'] > datetime.now()]
+
+    if active_orders:
+        for order in active_orders:
+            current_price = get_coin_price(order['coin'])
+            time_left = order['expires_at'] - datetime.now()
+            minutes_left = int(time_left.total_seconds() / 60)
+
+            order_type = "买入" if order['type'] == 'buy' else "卖出"
+            result += f"\n• [{order['order_id'][:8]}] {order_type} {order['coin']}\n"
+            result += f"  数量: {order['amount']:.2f} 价格: {order['price']:.2f}\n"
+            result += f"  当前价: {current_price:.2f} 剩余: {minutes_left}分钟\n"
+    else:
+        result += "暂无挂单\n"
+
     yield event.plain_result(result)
 
 
@@ -974,7 +1144,8 @@ async def bi_help(event: AstrMessageEvent):
     result += f"\n📊 系统特性:\n"
     result += f"• 价格每120秒自动波动一次\n"
     result += f"• 不同币种有差异化波动率（2%-10%）\n"
-    result += f"• 交易手续费: 1%\n"
+    result += f"• 买入手续费: {BUY_FEE*100:.1f}%\n"
+    result += f"• 卖出手续费: {SELL_FEE*100:.1f}%\n"
     result += f"• 初始资金: 10000\n"
     result += f"• 支持币种: {', '.join(COINS)}"
     
@@ -997,9 +1168,9 @@ async def bi_reset(event: AstrMessageEvent):
         user_assets[user_id] = {coin: 0.0 for coin in COINS}
     if user_id in user_balance:
         user_balance[user_id] = 10000.0
-    if user_id in user_orders:
-        user_orders[user_id] = []
-    
+    if user_id in pending_orders:
+        pending_orders[user_id] = []
+
     yield event.plain_result("✅ 用户账户已重置")
 
 
