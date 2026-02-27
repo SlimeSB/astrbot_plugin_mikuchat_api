@@ -6,9 +6,9 @@ from astrbot.core.platform.message_session import MessageSession
 from .core.cave import *
 from .core.user import *
 from .core.bi import *
-from .core.bi import update_group_activity, set_plugin_context, set_whitelist_groups, get_whitelist_groups
+from .core.bi import update_group_activity, set_plugin_context, set_whitelist_groups, get_whitelist_groups, save_bi_data, load_bi_data
 
-@register("MikuchatApi", "Yuuz12", "可调用MikuChat API", "1.3.0", "https://github.com/Yuuz12/astrbot_plugin_mikuchat_api")
+@register("MikuchatApi", "Yuuz12", "可调用MikuChat API", "1.4.1", "https://github.com/Yuuz12/astrbot_plugin_mikuchat_api")
 
 class UserPlugin(Star):
     def __init__(self, context: Context):
@@ -53,17 +53,20 @@ class BiPlugin(Star):
         # 设置插件上下文（用于LLM调用）
         set_plugin_context(context)
 
+        # 加载上次保存的数据
+        load_bi_data()
+
         if 'enabled_bi_groups' not in self.config:
             logger.error("[BiPlugin] 配置项缺少 enabled_bi_groups 键")
 
         if 'platform_id' not in self.config:
             logger.error("[BiPlugin] 配置项缺少 platform_id 键")
-        
+
         sessions: list[tuple[str, str, str]] = []
         for group_id in self.config.get('enabled_bi_groups', []):
             if not self.config.get('platform_id', ""):
                 break
-            sessions.append((self.config.get('platform_id', ""), "GroupMessage", group_id)) 
+            sessions.append((self.config.get('platform_id', ""), "GroupMessage", group_id))
         set_whitelist_groups(sessions)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
@@ -146,3 +149,4 @@ class BiPlugin(Star):
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
         bi_stop_market_updates()
+        save_bi_data()

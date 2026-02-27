@@ -10,10 +10,14 @@ import random
 import time
 import threading
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from .mikuchat_html_render import template_to_pic
+
+# 数据文件路径
+DATA_FILE = Path(__file__).parent / "bi_data.json"
 
 # 虚拟币交易系统 - 轻量化版本
 
@@ -26,10 +30,10 @@ session_id  : 群号/qq号
 """
 WHITELIST_SESSIONS: list[tuple[str, str, str]] = []
 
-# 支持的虚拟币种
+# 支持的收集品
 COINS = ["PIG", "GENSHIN", "DOGE", "SAKIKO", "WUWA", "SHIRUKU", "KIRINO"]
 
-# 初始价格
+# 初始积分
 INITIAL_PRICES = {
     "PIG": 100.0,
     "GENSHIN": 648.0,
@@ -40,23 +44,23 @@ INITIAL_PRICES = {
     "KIRINO": 10.0,
 }
 
-# 币种波动率基础配置（基于币种特性）
+# 收集品变化度基础配置（基于收集品特性）
 VOLATILITY_BASE = {
-    "PIG": 0.03,      # 猪猪币，中低等波动
-    "GENSHIN": 0.05,     # 原神币，中波动
-    "DOGE": 0.07,    # 山寨币，高波动
-    "SAKIKO": 0.10,  # 祥子币，极高波动
-    "WUWA": 0.05,     # 鸣朝币，中波动
-    "SHIRUKU": 0.02,   # 纨素币，低波动
-    "KIRINO": 0.02    # 桐乃币，低波动
+    "PIG": 0.03,      # 猪猪，中低等变化
+    "GENSHIN": 0.05,     # 原神，中变化
+    "DOGE": 0.07,    # 狗狗，高变化
+    "SAKIKO": 0.10,  # 祥子，极高变化
+    "WUWA": 0.05,     # 鸣朝，中变化
+    "SHIRUKU": 0.02,   # 纨素，低变化
+    "KIRINO": 0.02    # 桐乃，低变化
 }
 
-# 波动率随机波动参数
-VOLATILITY_RANDOM_RANGE = 0.005  # 波动率随机波动范围 ±0.5%
-VOLATILITY_MIN_RATIO = 0.5       # 波动率最低为基值的50%
-VOLATILITY_MAX_RATIO = 1.5       # 波动率最高为基值的150%
+# 变化度随机变化参数
+VOLATILITY_RANDOM_RANGE = 0.005  # 变化度随机变化范围 ±0.5%
+VOLATILITY_MIN_RATIO = 0.5       # 变化度最低为基值的50%
+VOLATILITY_MAX_RATIO = 1.5       # 变化度最高为基值的150%
 
-# 市场波动参数
+# 市场变化参数
 UPDATE_INTERVAL = 120  # 2分钟更新一次
 BUY_FEE = 0.001  # 0.1% 买入手续费
 SELL_FEE = 0.02  # 2% 卖出手续费
@@ -68,9 +72,9 @@ last_event_time = 0  # 上次事件时间
 INACTIVITY_THRESHOLD = 3600  # 1小时无发言视为不活跃
 
 # 历史记录参数
-MAX_HISTORY_SIZE = 720  # 每个币种最大历史记录数
+MAX_HISTORY_SIZE = 720  # 每个收集品最大历史记录数
 
-# 动态波动率存储
+# 动态变化度存储
 current_volatility = {coin: base for coin, base in VOLATILITY_BASE.items()}
 
 # 全局市场数据
@@ -234,50 +238,49 @@ def _generate_and_apply_event():
 
 
 async def _generate_event_with_llm(coin: str, change_percent: float) -> str:
-    """使用LLM生成随机事件并应用价格变动"""
+    """使用LLM生成随机事件并应用积分变动"""
     global _plugin_context
-    
+
     if not _plugin_context:
         logger.warning("[Event] 插件Context未设置，无法调用LLM")
         return _apply_event_fallback(coin, change_percent)
-    
+
     try:
-        # 判断是利好还是利空
+        # 判断是增加还是减少
         is_positive = change_percent > 0
         change_str = f"+{change_percent*100:.1f}%" if is_positive else f"{change_percent*100:.1f}%"
-        
+
         # 构建提示词
-        system_prompt = f"""你是一个虚拟币市场新闻生成器。请为{coin}币生成一条突发新闻，解释为什么它刚刚{'暴涨' if is_positive else '暴跌'}了{abs(change_percent)*100:.1f}%。
+        system_prompt = f"""你是一个游戏事件生成器。请为{coin}收集品生成一条趣味事件，解释为什么它的积分刚刚{'大幅提升' if is_positive else '大幅下降'}了{abs(change_percent)*100:.1f}%。
 
 要求：
 1. 内容要简短有趣（50字以内），适合在群聊中播报
-2. 可以是荒诞搞笑的新闻（如：创始人被猪拱了、狗狗学会炒币了等）
-3. 要提到{coin}币名称和具体涨跌幅
-4. 语气要像突发新闻播报
+2. 可以是荒诞搞笑的事件（如：被猫咪偷吃了、被外星人带走了等）
+3. 要提到{coin}收集品名称和具体积分变化
+4. 语气要像游戏公告
 
 示例：
-- "突发！PIG币创始人被发现在农场和猪跳舞，市场信心大增，价格暴涨15%！"
-- "DOGE币因马斯克发推'汪汪'而暴涨12%，分析师称这是'狗屎运'！"
-- "SAKIKO币因祥子破产传闻暴跌18%，投资者纷纷表示'这是命运'。"
-"""
-        
-        user_prompt = f"请为{coin}币生成一条{'暴涨' if is_positive else '暴跌'}{abs(change_percent)*100:.1f}%的突发新闻："
-        
+- "突发！PIG收集品被发现在农场和猪跳舞，人气大增，积分暴涨15%！"
+- "DOGE收集品因马斯克发推'汪汪'而积分暴涨12%，玩家称这是'狗屎运'！"
+- "SAKIKO收集品因祥子破产传闻积分暴跌18%，玩家们纷纷表示'这是命运'。"""
+
+        user_prompt = f"请为{coin}收集品生成一条积分{'大幅提升' if is_positive else '大幅下降'}{abs(change_percent)*100:.1f}%的趣味事件："
+
         # 调用LLM
         llm_response = await _call_llm_simple(system_prompt, user_prompt)
-        
+
         if llm_response:
-            # 应用价格变动
+            # 应用积分变动
             _apply_price_change(coin, change_percent)
-            
-            # 添加价格变动信息
+
+            # 添加积分变动信息
             arrow = "📈" if is_positive else "📉"
             old_price = market_prices[coin] / (1 + change_percent)
             new_price = market_prices[coin]
-            return f"📰 【虚拟币快讯】{arrow}\n{llm_response.strip()}\n\n{coin}: {old_price:.2f} → {new_price:.2f} ({change_str})"
+            return f"📰 【收集品快讯】{arrow}\n{llm_response.strip()}\n\n{coin}: {old_price:.2f} → {new_price:.2f} ({change_str})"
         else:
             return _apply_event_fallback(coin, change_percent)
-            
+
     except Exception as e:
         logger.error(f"[Event] LLM调用失败: {e}")
         return _apply_event_fallback(coin, change_percent)
@@ -335,7 +338,7 @@ def _apply_price_change(coin: str, change_percent: float):
         if len(market_history[coin]) > MAX_HISTORY_SIZE:
             market_history[coin] = market_history[coin][-MAX_HISTORY_SIZE:]
         
-        logger.info(f"[Event] {coin}价格变动: {old_price:.2f} → {market_prices[coin]:.2f} ({change_percent*100:+.1f}%)")
+        logger.info(f"[Event] {coin}积分变动: {old_price:.2f} → {market_prices[coin]:.2f} ({change_percent*100:+.1f}%)")
 
 
 def _apply_event_fallback(coin: str, change_percent: float) -> str:
@@ -343,35 +346,35 @@ def _apply_event_fallback(coin: str, change_percent: float) -> str:
     is_positive = change_percent > 0
     change_str = f"+{change_percent*100:.1f}%" if is_positive else f"{change_percent*100:.1f}%"
     arrow = "📈" if is_positive else "📉"
-    
-    # 应用价格变动
+
+    # 应用积分变动
     _apply_price_change(coin, change_percent)
-    
-    # 利好事件模板
+
+    # 增加事件模板
     positive_events = [
-        "突发！{coin}币创始人被发现在农场和动物跳舞，市场信心大增！",
-        "{coin}币因某大佬在推特上发了相关表情包而暴涨，网友称这是'玄学力量'！",
-        "{coin}币社区宣布'上月球'计划，投资者疯狂买入！",
-        "某知名交易所宣布上线{coin}币，引发抢购热潮！",
+        "突发！{coin}收集品被发现在农场和动物跳舞，人气大增！",
+        "{coin}收集品因某大佬在推特上发了相关表情包而积分暴涨，网友称这是'玄学力量'！",
+        "{coin}收集品社区宣布'上月球'计划，玩家们疯狂收集！",
+        "某知名博主宣布推荐{coin}收集品，引发收集热潮！",
     ]
-    
-    # 利空事件模板
+
+    # 减少事件模板
     negative_events = [
-        "突发！{coin}币创始人被传跑路，投资者恐慌抛售！",
-        "{coin}币因某大佬在推特上发了'不看好'而暴跌，市场信心受挫！",
-        "{coin}币交易所遭遇技术故障，用户无法提现引发恐慌！",
-        "某国宣布禁止{coin}币交易，市场一片哀嚎！",
+        "突发！{coin}收集品被传要绝版，玩家们纷纷出手！",
+        "{coin}收集品因某大佬在推特上发了'不看好'而积分下降，人气受挫！",
+        "{coin}收集品遭遇技术故障，暂时无法兑换引发热议！",
+        "某国宣布限制{coin}收集品流通，引发讨论！",
     ]
-    
+
     # 根据涨跌选择事件模板
     if is_positive:
         event_text = random.choice(positive_events).format(coin=coin)
     else:
         event_text = random.choice(negative_events).format(coin=coin)
-    
+
     old_price = market_prices[coin] / (1 + change_percent)
     new_price = market_prices[coin]
-    return f"📰 【虚拟币快讯】{arrow}\n{event_text}\n\n{coin}: {old_price:.2f} → {new_price:.2f} ({change_str})"
+    return f"📰 【游戏快讯】{arrow}\n{event_text}\n\n{coin}: {old_price:.2f} → {new_price:.2f} ({change_str})"
 
 
 def _get_active_groups() -> List[str]:
@@ -504,6 +507,100 @@ def create_order_id() -> str:
     return uuid.uuid4().hex[:12].upper()
 
 
+def save_bi_data():
+    """保存所有数据到JSON文件"""
+    global market_prices, market_history, user_assets, user_balance, pending_orders, current_volatility
+
+    try:
+        # 转换datetime对象为字符串
+        serializable_pending_orders = {}
+        for user_id, orders in pending_orders.items():
+            serializable_pending_orders[user_id] = []
+            for order in orders:
+                order_copy = order.copy()
+                order_copy['created_at'] = order_copy['created_at'].isoformat()
+                order_copy['expires_at'] = order_copy['expires_at'].isoformat()
+                serializable_pending_orders[user_id].append(order_copy)
+
+        # 转换market_history中的datetime
+        serializable_market_history = {}
+        for coin, history in market_history.items():
+            serializable_market_history[coin] = []
+            for record in history:
+                record_copy = record.copy()
+                if isinstance(record_copy['timestamp'], datetime):
+                    record_copy['timestamp'] = record_copy['timestamp'].isoformat()
+                serializable_market_history[coin].append(record_copy)
+
+        data = {
+            'market_prices': market_prices,
+            'market_history': serializable_market_history,
+            'user_assets': user_assets,
+            'user_balance': user_balance,
+            'pending_orders': serializable_pending_orders,
+            'current_volatility': current_volatility,
+            'saved_at': datetime.now().isoformat()
+        }
+
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"[Data] 数据已保存到 {DATA_FILE}")
+    except Exception as e:
+        logger.error(f"[Data] 保存数据失败: {e}")
+
+
+def load_bi_data():
+    """从JSON文件加载数据"""
+    global market_prices, market_history, user_assets, user_balance, pending_orders, current_volatility
+
+    if not DATA_FILE.exists():
+        logger.info("[Data] 数据文件不存在，使用初始数据")
+        return
+
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # 加载市场价格
+        if 'market_prices' in data:
+            market_prices = data['market_prices']
+
+        # 加载市场历史（转换时间字符串）
+        if 'market_history' in data:
+            for coin, history in data['market_history'].items():
+                market_history[coin] = []
+                for record in history:
+                    record['timestamp'] = datetime.fromisoformat(record['timestamp'])
+                    market_history[coin].append(record)
+
+        # 加载用户资产
+        if 'user_assets' in data:
+            user_assets = data['user_assets']
+
+        # 加载用户余额
+        if 'user_balance' in data:
+            user_balance = data['user_balance']
+
+        # 加载挂单（转换时间字符串）
+        if 'pending_orders' in data:
+            for user_id, orders in data['pending_orders'].items():
+                pending_orders[user_id] = []
+                for order in orders:
+                    order['created_at'] = datetime.fromisoformat(order['created_at'])
+                    order['expires_at'] = datetime.fromisoformat(order['expires_at'])
+                    pending_orders[user_id].append(order)
+
+        # 加载变化度
+        if 'current_volatility' in data:
+            current_volatility = data['current_volatility']
+
+        saved_time = data.get('saved_at', '未知')
+        logger.info(f"[Data] 数据已从 {DATA_FILE} 加载 (保存时间: {saved_time})")
+    except Exception as e:
+        logger.error(f"[Data] 加载数据失败: {e}")
+
+
 def check_and_execute_pending_orders():
     """检查并执行符合条件的挂单"""
     global pending_orders
@@ -567,45 +664,45 @@ def check_and_execute_pending_orders():
 
 
 def update_volatility():
-    """更新动态波动率（小幅度随机波动）"""
+    """更新动态变化度（小幅度随机变化）"""
     global current_volatility
-    
+
     for coin in COINS:
         base_volatility = VOLATILITY_BASE.get(coin, 0.02)
-        
-        # 在基础波动率上添加小幅度随机波动
+
+        # 在基础变化度上添加小幅度随机变化
         random_change = random.uniform(-VOLATILITY_RANDOM_RANGE, VOLATILITY_RANDOM_RANGE)
         new_volatility = current_volatility[coin] + random_change
-        
-        # 设置波动率保底（在基值的50%-150%范围内）
+
+        # 设置变化度保底（在基值的50%-150%范围内）
         min_volatility = base_volatility * VOLATILITY_MIN_RATIO
         max_volatility = base_volatility * VOLATILITY_MAX_RATIO
-        
-        # 确保波动率在合理范围内
+
+        # 确保变化度在合理范围内
         current_volatility[coin] = max(min_volatility, min(new_volatility, max_volatility))
 
 
 def update_market_prices():
-    """更新市场价格（使用动态波动率）"""
+    """更新积分（使用动态变化度）"""
     global market_prices, last_update_time
-    
+
     # 移除时间检查，由后台线程控制频率
-    
+
     for coin in COINS:
-        # 获取该币种的动态波动率
+        # 获取该收集品的动态变化度
         coin_volatility = current_volatility[coin]
-        
-        # 随机价格波动（基于动态波动率）
+
+        # 随机积分变化（基于动态变化度）
         change_percent = random.uniform(-coin_volatility, coin_volatility)
         new_price = market_prices[coin] * (1 + change_percent)
-        market_prices[coin] = max(0.01, new_price)  # 防止价格归零
-        
-        # 记录价格历史
+        market_prices[coin] = max(0.01, new_price)  # 防止积分归零
+
+        # 记录积分历史
         market_history[coin].append({
             'timestamp': datetime.now(),
             'price': market_prices[coin],
             'change_percent': change_percent,
-            'volatility': coin_volatility  # 记录当前波动率
+            'volatility': coin_volatility  # 记录当前变化度
         })
         if len(market_history[coin]) > MAX_HISTORY_SIZE:
             market_history[coin] = market_history[coin][-MAX_HISTORY_SIZE:]
@@ -629,22 +726,22 @@ def get_user_total_assets(user_id: str) -> float:
 
 
 async def bi_price(event: AstrMessageEvent, coin: str = ""):
-    """查看虚拟币价格"""
+    """查看积分价格"""
     # 不再主动更新价格，由后台线程负责
-    
+
     if coin:
         coin = coin.upper()
         if coin not in COINS:
-            yield event.plain_result(f"❌ 不支持的币种: {coin}\n支持币种: {', '.join(COINS)}")
+            yield event.plain_result(f"❌ 不支持的收集品: {coin}\n支持收集品: {', '.join(COINS)}")
             return
-        
+
         price = get_coin_price(coin)
-        result = f"💰 {coin} 当前价格\n"
+        result = f"💰 {coin} 当前积分\n"
         result += f"━━━━━━━━━━━━━━\n"
-        result += f"📈 价格: {price:.2f}\n"
+        result += f"📈 积分: {price:.2f}\n"
         yield event.plain_result(result)
     else:
-        result = "💰 虚拟币市场价格\n"
+        result = "💰 积分兑换表\n"
         result += "━━━━━━━━━━━━━━\n"
         for coin in COINS:
             price = get_coin_price(coin)
@@ -653,9 +750,9 @@ async def bi_price(event: AstrMessageEvent, coin: str = ""):
 
 
 async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float = 0.0):
-    """买入虚拟币
-    price=0: 市价买入，立即成交
-    price>0: 限价买入，价格必须低于市场价，形成挂单
+    """兑换积分
+    price=0: 立即兑换
+    price>0: 预约兑换，价格必须低于当前积分，形成预约单
     """
     user_id = str(event.get_sender_id())
     init_user(user_id)
@@ -663,12 +760,12 @@ async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float
 
     coin = coin.upper()
     if coin not in COINS:
-        yield event.plain_result(f"❌ 不支持的币种: {coin}")
+        yield event.plain_result(f"❌ 不支持的收集品: {coin}")
         return
 
     current_price = get_coin_price(coin)
 
-    # 市价买入（price=0或不填）
+    # 立即兑换（price=0或不填）
     if price == 0.0:
         price = current_price
         total_cost = amount * price
@@ -676,30 +773,30 @@ async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float
         total_with_fee = total_cost + fee
 
         if user_balance[user_id] < total_with_fee:
-            yield event.plain_result(f"❌ 余额不足！需要 {total_with_fee:.2f}（含手续费 {fee:.2f}），当前余额: {user_balance[user_id]:.2f}")
+            yield event.plain_result(f"❌ 糖果不足！需要 {total_with_fee:.2f}（含服务费 {fee:.2f}），当前糖果: {user_balance[user_id]:.2f}")
             return
 
-        # 执行交易
+        # 执行兑换
         user_balance[user_id] -= total_with_fee
         user_assets[user_id][coin] += amount
 
-        result = f"✅ 市价买入成功！\n"
+        result = f"✅ 兑换成功！\n"
         result += f"━━━━━━━━━━━━━━\n"
-        result += f"币种: {coin}\n"
+        result += f"收集品: {coin}\n"
         result += f"数量: {amount:.2f}\n"
-        result += f"成交价格: {price:.2f}\n"
-        result += f"交易额: {total_cost:.2f}\n"
-        result += f"买入手续费: {fee:.2f} ({BUY_FEE*100:.1f}%)\n"
-        result += f"总支出: {total_with_fee:.2f}\n"
-        result += f"余额: {user_balance[user_id]:.2f}"
+        result += f"兑换积分: {price:.2f}\n"
+        result += f"消耗糖果: {total_cost:.2f}\n"
+        result += f"服务费: {fee:.2f} ({BUY_FEE*100:.1f}%)\n"
+        result += f"总消耗: {total_with_fee:.2f}\n"
+        result += f"剩余糖果: {user_balance[user_id]:.2f}"
         yield event.plain_result(result)
     else:
-        # 限价买入，价格必须低于市场价
+        # 预约兑换，价格必须低于当前积分
         if price >= current_price:
-            yield event.plain_result(f"❌ 限价买入价格必须低于当前市场价 {current_price:.2f}")
+            yield event.plain_result(f"❌ 预约兑换积分必须低于当前积分 {current_price:.2f}")
             return
 
-        # 创建挂单（不扣费，成交时检查）
+        # 创建预约单（不扣费，兑换时检查）
         order_id = create_order_id()
         order = {
             'order_id': order_id,
@@ -712,24 +809,24 @@ async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float
         }
         pending_orders[user_id].append(order)
 
-        result = f"📋 买入挂单创建成功！\n"
+        result = f"📋 预约单创建成功！\n"
         result += f"━━━━━━━━━━━━━━\n"
-        result += f"订单号: {order_id}\n"
-        result += f"币种: {coin}\n"
+        result += f"单号: {order_id}\n"
+        result += f"收集品: {coin}\n"
         result += f"数量: {amount:.2f}\n"
-        result += f"挂单价格: {price:.2f}\n"
-        result += f"当前市场价: {current_price:.2f}\n"
-        result += f"预计交易额: {amount * price:.2f}\n"
-        result += f"预计手续费: {amount * price * BUY_FEE:.2f}\n"
+        result += f"预约积分: {price:.2f}\n"
+        result += f"当前积分: {current_price:.2f}\n"
+        result += f"预计消耗: {amount * price:.2f}\n"
+        result += f"预计服务费: {amount * price * BUY_FEE:.2f}\n"
         result += f"有效期: 1小时\n"
-        result += f"💡 当市场价 ≤ {price:.2f} 时自动成交"
+        result += f"💡 当积分 ≤ {price:.2f} 时自动兑换"
         yield event.plain_result(result)
 
 
 async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: float = 0.0):
     """卖出虚拟币
     price=0: 市价卖出，立即成交
-    price>0: 限价卖出，价格必须高于市场价，形成挂单
+    price>0: 预约回收，价格必须高于当前积分，形成预约单
     """
     user_id = str(event.get_sender_id())
     init_user(user_id)
@@ -737,15 +834,15 @@ async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: floa
 
     coin = coin.upper()
     if coin not in COINS:
-        yield event.plain_result(f"❌ 不支持的币种: {coin}")
+        yield event.plain_result(f"❌ 不支持的收集品: {coin}")
         return
 
     current_price = get_coin_price(coin)
 
-    # 市价卖出（price=0或不填）
+    # 立即回收（price=0或不填）
     if price == 0.0:
         if user_assets[user_id][coin] < amount:
-            yield event.plain_result(f"❌ {coin} 持有量不足！当前持有: {user_assets[user_id][coin]:.2f}")
+            yield event.plain_result(f"❌ {coin} 持有数量不足！当前持有: {user_assets[user_id][coin]:.2f}")
             return
 
         price = current_price
@@ -753,27 +850,27 @@ async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: floa
         fee = total_income * SELL_FEE
         net_income = total_income - fee
 
-        # 执行交易
+        # 执行回收
         user_assets[user_id][coin] -= amount
         user_balance[user_id] += net_income
 
-        result = f"✅ 市价卖出成功！\n"
+        result = f"✅ 回收成功！\n"
         result += f"━━━━━━━━━━━━━━\n"
-        result += f"币种: {coin}\n"
+        result += f"收集品: {coin}\n"
         result += f"数量: {amount:.2f}\n"
-        result += f"成交价格: {price:.2f}\n"
-        result += f"交易额: {total_income:.2f}\n"
-        result += f"卖出手续费: {fee:.2f} ({SELL_FEE*100:.1f}%)\n"
-        result += f"净收入: {net_income:.2f}\n"
-        result += f"余额: {user_balance[user_id]:.2f}"
+        result += f"回收积分: {price:.2f}\n"
+        result += f"获得糖果: {total_income:.2f}\n"
+        result += f"服务费: {fee:.2f} ({SELL_FEE*100:.1f}%)\n"
+        result += f"净获得: {net_income:.2f}\n"
+        result += f"糖果余额: {user_balance[user_id]:.2f}"
         yield event.plain_result(result)
     else:
-        # 限价卖出，价格必须高于市场价
+        # 预约回收，价格必须高于当前积分
         if price <= current_price:
-            yield event.plain_result(f"❌ 限价卖出价格必须高于当前市场价 {current_price:.2f}")
+            yield event.plain_result(f"❌ 预约回收积分必须高于当前积分 {current_price:.2f}")
             return
 
-        # 创建挂单（不扣币，成交时检查）
+        # 创建预约单（不扣数量，兑换时检查）
         order_id = create_order_id()
         order = {
             'order_id': order_id,
@@ -786,48 +883,48 @@ async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: floa
         }
         pending_orders[user_id].append(order)
 
-        result = f"📋 卖出挂单创建成功！\n"
+        result = f"📋 回收预约单创建成功！\n"
         result += f"━━━━━━━━━━━━━━\n"
-        result += f"订单号: {order_id}\n"
-        result += f"币种: {coin}\n"
+        result += f"单号: {order_id}\n"
+        result += f"收集品: {coin}\n"
         result += f"数量: {amount:.2f}\n"
-        result += f"挂单价格: {price:.2f}\n"
-        result += f"当前市场价: {current_price:.2f}\n"
-        result += f"预计交易额: {amount * price:.2f}\n"
-        result += f"预计手续费: {amount * price * SELL_FEE:.2f}\n"
+        result += f"预约积分: {price:.2f}\n"
+        result += f"当前积分: {current_price:.2f}\n"
+        result += f"预计获得: {amount * price:.2f}\n"
+        result += f"预计服务费: {amount * price * SELL_FEE:.2f}\n"
         result += f"有效期: 1小时\n"
-        result += f"💡 当市场价 ≥ {price:.2f} 时自动成交"
+        result += f"💡 当积分 ≥ {price:.2f} 时自动回收"
         yield event.plain_result(result)
 
 
 async def bi_assets(event: AstrMessageEvent):
-    """查看用户资产和挂单"""
+    """查看用户背包和预约"""
     user_id = str(event.get_sender_id())
     init_user(user_id)
     init_pending_orders(user_id)
 
     total_assets = get_user_total_assets(user_id)
 
-    result = f"💼 您的资产总览\n"
+    result = f"💼 您的背包\n"
     result += f"━━━━━━━━━━━━━━\n"
-    result += f"💰 现金余额: {user_balance[user_id]:.2f}\n"
-    result += f"📊 总资产: {total_assets:.2f}\n\n"
+    result += f"🍬 糖果数量: {user_balance[user_id]:.2f}\n"
+    result += f"📊 总价值: {total_assets:.2f}\n\n"
 
-    result += f"🪙 虚拟币持仓:\n"
+    result += f"🎁 收集品:\n"
     has_holdings = False
     for coin in COINS:
         amount = user_assets[user_id][coin]
         if amount > 0:
             price = get_coin_price(coin)
             value = amount * price
-            result += f"• {coin}: {amount:.2f} 枚 (价值: {value:.2f})\n"
+            result += f"• {coin}: {amount:.2f} 个 (价值: {value:.2f})\n"
             has_holdings = True
 
     if not has_holdings:
-        result += "暂无持仓\n"
+        result += "背包空空\n"
 
-    # 显示挂单
-    result += f"\n📋 当前挂单:\n"
+    # 显示预约单
+    result += f"\n📋 当前预约:\n"
     orders = pending_orders.get(user_id, [])
     active_orders = [o for o in orders if o['expires_at'] > datetime.now()]
 
@@ -837,41 +934,41 @@ async def bi_assets(event: AstrMessageEvent):
             time_left = order['expires_at'] - datetime.now()
             minutes_left = int(time_left.total_seconds() / 60)
 
-            order_type = "买入" if order['type'] == 'buy' else "卖出"
+            order_type = "兑换" if order['type'] == 'buy' else "回收"
             result += f"\n• [{order['order_id'][:8]}] {order_type} {order['coin']}\n"
-            result += f"  数量: {order['amount']:.2f} 价格: {order['price']:.2f}\n"
-            result += f"  当前价: {current_price:.2f} 剩余: {minutes_left}分钟\n"
+            result += f"  数量: {order['amount']:.2f} 积分: {order['price']:.2f}\n"
+            result += f"  当前积分: {current_price:.2f} 剩余: {minutes_left}分钟\n"
     else:
-        result += "暂无挂单\n"
+        result += "暂无预约\n"
 
     yield event.plain_result(result)
 
 
 async def bi_coins(event: AstrMessageEvent):
-    """查看支持币种"""
-    result = f"🪙 支持的虚拟币种\n"
+    """查看支持收集品"""
+    result = f"🎁 可收集收集品\n"
     result += f"━━━━━━━━━━━━━━\n"
     for coin in COINS:
         price = get_coin_price(coin)
         result += f"• {coin}: {price:.2f}\n"
-    
+
     yield event.plain_result(result)
 
 
 async def bi_history(self, event: AstrMessageEvent, coin: str, limit: int = 25):
-    """查询指定币种历史价格（K线图表图片）"""
+    """查询指定收集品历史积分（趋势图表图片）"""
     coin = coin.upper()
     if coin not in COINS:
-        yield event.plain_result(f"❌ 不支持的币种: {coin}\n支持币种: {', '.join(COINS)}")
+        yield event.plain_result(f"❌ 不支持的收集品: {coin}\n支持收集品: {', '.join(COINS)}")
         return
-    
+
     if limit <= 0 or limit > 25:
         yield event.plain_result("❌ 查询数量必须在1-25之间")
         return
-    
+
     history_data = market_history.get(coin, [])
     if not history_data:
-        yield event.plain_result(f"❌ {coin} 暂无历史价格数据")
+        yield event.plain_result(f"❌ {coin} 暂无历史积分数据")
         return
     
     # 获取最近的历史记录
@@ -902,8 +999,8 @@ async def bi_history(self, event: AstrMessageEvent, coin: str, limit: int = 25):
             # 计算影线长度（限制在合理范围内，最大为实体高度的50%）
             body_height_price = abs(close_price - open_price)
             max_wick_length = max(body_height_price * 0.5, open_price * volatility * 0.1)
-            
-            # 最高价和最低价基于实体上下波动
+
+            # 最高价和最低价基于实体上下变化
             if change >= 0:  # 上涨
                 high_price = close_price + random.uniform(0, max_wick_length)
                 low_price = open_price - random.uniform(0, max_wick_length)
@@ -1035,7 +1132,7 @@ async def bi_history(self, event: AstrMessageEvent, coin: str, limit: int = 25):
         'chart_height': 280
     }
     
-    # 使用HTML模板渲染K线图表
+    # 使用HTML模板渲染趋势图表
     try:
         # 检查是否有html_render方法可用
         if hasattr(self, 'html_render'):
@@ -1048,121 +1145,121 @@ async def bi_history(self, event: AstrMessageEvent, coin: str, limit: int = 25):
             yield event.image_result(url_or_path=str(Path(__file__).parent / "html_render_cache" / "kline.png"))
         else:
             # 如果没有html_render方法，回退到文本显示
-            result = f"📈 {coin} 历史价格（最近{len(recent_history)}条）\n"
+            result = f"📈 {coin} 历史积分（最近{len(recent_history)}条）\n"
             result += f"━━━━━━━━━━━━━━\n"
-            result += f"当前价格: {current_price:.2f}\n"
+            result += f"当前积分: {current_price:.2f}\n"
             result += f"\n🕒 历史记录:\n"
-            
+
             for i, record in enumerate(recent_history, 1):
                 timestamp = record['timestamp'].strftime('%H:%M:%S')
                 price = record['price']
                 change_percent = record.get('change_percent', 0) * 100
                 volatility = record.get('volatility', 0) * 100
-                
+
                 change_symbol = "↗️" if change_percent > 0 else "↘️" if change_percent < 0 else "➡️"
-                
-                result += f"{i}. {timestamp} - {price:.2f} {change_symbol}{abs(change_percent):.1f}% (波动率: {volatility:.1f}%)\n"
-            
+
+                result += f"{i}. {timestamp} - {price:.2f} {change_symbol}{abs(change_percent):.1f}% (变化度: {volatility:.1f}%)\n"
+
             if len(recent_history) >= 2:
                 result += f"\n📊 统计信息:\n"
-                result += f"• 起始价格: {first_price:.2f}\n"
-                result += f"• 结束价格: {last_price:.2f}\n"
+                result += f"• 起始积分: {first_price:.2f}\n"
+                result += f"• 结束积分: {last_price:.2f}\n"
                 result += f"• 总变化: {total_change:+.1f}%\n"
                 result += f"• 记录数量: {len(recent_history)}条\n"
-            
-            result += f"\n💡 提示: 使用 bi_history <币种> [数量] 查询更多历史记录"
+
+            result += f"\n💡 提示: 使用 bi_history <收集品> [数量] 查询更多历史记录"
             yield event.plain_result(result)
-    
+
     except Exception as e:
-        logger.error(f"K线图表渲染失败: {e}")
-        yield event.plain_result(f"❌ K线图表生成失败，请稍后重试")
+        logger.error(f"趋势图表渲染失败: {e}")
+        yield event.plain_result(f"❌ 趋势图表生成失败，请稍后重试")
 
 
 async def bi_volatility(event: AstrMessageEvent):
-    """查看币种波动率信息（动态波动率）"""
-    # 不再主动更新波动率，由后台线程负责
-    
-    result = f"📊 币种波动率特性（动态）\n"
+    """查看收集品变化度信息（动态变化度）"""
+    # 不再主动更新变化度，由后台线程负责
+
+    result = f"📊 收集品变化度特性（动态）\n"
     result += f"━━━━━━━━━━━━━━\n"
-    
-    # 按当前波动率从高到低排序
+
+    # 按当前变化度从高到低排序
     sorted_coins = sorted(current_volatility.items(), key=lambda x: x[1], reverse=True)
-    
+
     for coin, current_vol in sorted_coins:
         base_vol = VOLATILITY_BASE[coin]
         current_vol_percent = current_vol * 100
         base_vol_percent = base_vol * 100
-        
-        # 计算波动率变化
+
+        # 计算变化度变化
         vol_change = ((current_vol - base_vol) / base_vol) * 100
         change_symbol = "↗️" if vol_change > 0 else "↘️" if vol_change < 0 else "➡️"
-        
+
         if current_vol >= 0.10:
-            risk_level = "🔥 极高风险"
+            risk_level = "🔥 变化剧烈"
         elif current_vol >= 0.07:
-            risk_level = "⚠️ 高风险"
+            risk_level = "⚠️ 变化较大"
         elif current_vol >= 0.03:
-            risk_level = "📈 中等风险"
+            risk_level = "📈 变化适中"
         else:
-            risk_level = "🛡️ 低风险"
-        
+            risk_level = "🛡️ 变化平稳"
+
         current_price = get_coin_price(coin)
         result += f"• {coin}: {current_vol_percent:.1f}% {risk_level} {change_symbol}{abs(vol_change):.1f}%\n"
-        result += f"  基值: {base_vol_percent:.1f}% | 当前: {current_price:.2f}\n"
-    
-    result += f"\n💡 动态波动率说明:\n"
-    result += f"• 波动率每120秒随机波动 ±0.5%\n"
-    result += f"• 波动率保底范围: 基值的50%-200%\n"
-    result += f"• 高风险币种可能带来高收益，也可能造成大亏损\n"
-    result += f"• 价格每120秒自动更新\n"
-    
+        result += f"  基准: {base_vol_percent:.1f}% | 当前积分: {current_price:.2f}\n"
+
+    result += f"\n💡 动态变化度说明:\n"
+    result += f"• 变化度每120秒随机变化 ±0.5%\n"
+    result += f"• 变化度保底范围: 基准的50%-200%\n"
+    result += f"• 变化剧烈的收集品积分变化大，收集更有挑战性\n"
+    result += f"• 积分每120秒自动更新\n"
+
     yield event.plain_result(result)
 
 
 async def bi_help(event: AstrMessageEvent):
     """查看所有命令帮助"""
-    result = f"📈 虚拟币交易系统帮助\n"
+    result = f"📈 积分收集系统帮助\n"
     result += f"━━━━━━━━━━━━━━\n"
-    
-    result += f"🪙 币种信息命令:\n"
-    result += f"• bi_price [币种] - 查看虚拟币价格（不指定币种显示全部）\n"
-    result += f"• bi_coins - 查看支持的所有币种列表\n"
-    result += f"• bi_volatility - 查看币种波动率特性\n"
-    result += f"• bi_history <币种> [数量] - 查询币种历史价格（默认25条，最多25条）\n"
-    
-    result += f"\n💸 交易命令:\n"
-    result += f"• bi_buy <币种> <数量> [价格] - 买入虚拟币（价格可选，默认市价）\n"
-    result += f"• bi_sell <币种> <数量> [价格] - 卖出虚拟币（价格可选，默认市价）\n"
-    
-    result += f"\n👤 账户命令:\n"
-    result += f"• bi_assets - 查看您的资产总览（现金+虚拟币持仓）\n"
-    result += f"• bi_reset - 重置账户（需要管理员权限）\n"
-    
+
+    result += f"🎁 收集品信息命令:\n"
+    result += f"• bi_price [收集品] - 查看积分（不指定收集品显示全部）\n"
+    result += f"• bi_coins - 查看可收集收集品列表\n"
+    result += f"• bi_volatility - 查看收集品变化度特性\n"
+    result += f"• bi_history <收集品> [数量] - 查询历史积分（默认25条，最多25条）\n"
+
+    result += f"\n💸 兑换命令:\n"
+    result += f"• bi_buy <收集品> <数量> [积分] - 兑换收集品（积分可选，默认当前积分）\n"
+    result += f"• bi_sell <收集品> <数量> [积分] - 回收收集品（积分可选，默认当前积分）\n"
+
+    result += f"\n👤 背包命令:\n"
+    result += f"• bi_assets - 查看您的背包（糖果+收集品）\n"
+    result += f"• bi_reset - 重置背包（需要管理员权限）\n"
+
     result += f"\n❓ 帮助命令:\n"
     result += f"• bi_help - 查看此帮助信息\n"
-    
+
     result += f"\n📊 系统特性:\n"
-    result += f"• 价格每120秒自动波动一次\n"
-    result += f"• 不同币种有差异化波动率（2%-10%）\n"
-    result += f"• 买入手续费: {BUY_FEE*100:.1f}%\n"
-    result += f"• 卖出手续费: {SELL_FEE*100:.1f}%\n"
-    result += f"• 初始资金: 10000\n"
-    result += f"• 支持币种: {', '.join(COINS)}"
-    
+    result += f"• 积分每120秒自动变化一次\n"
+    result += f"• 不同收集品有差异化变化度（2%-10%）\n"
+    result += f"• 兑换服务费: {BUY_FEE*100:.1f}%\n"
+    result += f"• 回收服务费: {SELL_FEE*100:.1f}%\n"
+    result += f"• 初始糖果: 10000\n"
+    result += f"• 可收集收集品: {', '.join(COINS)}"
+
     yield event.plain_result(result)
 
 
 async def bi_reset(event: AstrMessageEvent):
-    """重置用户账户（需要管理员权限）"""
+    """重置用户背包（需要管理员权限）"""
     user_id = str(event.get_sender_id())
-    
+
     # 简单的管理员检查
     admin_ids = []
-    
+
     if user_id not in admin_ids:
-        yield event.plain_result("❌ 权限不足，只有管理员可以重置账户")
+        yield event.plain_result("❌ 权限不足，只有管理员可以重置背包")
         return
-    
+
     # 重置用户数据
     if user_id in user_assets:
         user_assets[user_id] = {coin: 0.0 for coin in COINS}
@@ -1171,7 +1268,7 @@ async def bi_reset(event: AstrMessageEvent):
     if user_id in pending_orders:
         pending_orders[user_id] = []
 
-    yield event.plain_result("✅ 用户账户已重置")
+    yield event.plain_result("✅ 用户背包已重置")
 
 
 __all__ = [
