@@ -495,7 +495,7 @@ def bi_stop_market_updates():
 def init_user(user_id: str):
     """初始化用户账户"""
     if user_id not in user_assets:
-        user_assets[user_id] = {coin: 0.0 for coin in COINS}
+        user_assets[user_id] = {coin: {'amount': 0.0, 'total_cost': 0.0} for coin in COINS}
     if user_id not in user_balance:
         user_balance[user_id] = 10000.0  # 初始资金10000
     if user_id not in pending_orders:
@@ -652,7 +652,13 @@ def check_and_execute_pending_orders():
                     if user_balance.get(user_id, 0) >= total_with_fee:
                         # 执行买入
                         user_balance[user_id] -= total_with_fee
-                        user_assets[user_id][coin] += order['amount']
+                        # 更新总成本
+                        current_amount = user_assets[user_id][coin]['amount']
+                        current_total_cost = user_assets[user_id][coin]['total_cost']
+                        new_amount = current_amount + order['amount']
+                        new_total_cost = current_total_cost + order['amount'] * order['price']
+                        user_assets[user_id][coin]['amount'] = new_amount
+                        user_assets[user_id][coin]['total_cost'] = new_total_cost
                         logger.info(f"[Order] 买入挂单成交: {order['order_id']} {order['coin']} x{order['amount']} @ {order['price']}")
                     else:
                         # 资金不足，销毁订单
@@ -663,13 +669,22 @@ def check_and_execute_pending_orders():
                 # 卖出挂单: 市场价 >= 挂单价格时成交
                 if current_price >= order['price']:
                     # 检查币种是否足够
-                    if user_assets[user_id].get(coin, 0) >= order['amount']:
+                    if user_assets[user_id].get(coin, {'amount': 0})['amount'] >= order['amount']:
                         # 执行卖出
                         total_income = order['amount'] * order['price']
                         fee = total_income * SELL_FEE
                         net_income = total_income - fee
 
-                        user_assets[user_id][coin] -= order['amount']
+                        # 按比例更新总成本
+                        current_amount = user_assets[user_id][coin]['amount']
+                        current_total_cost = user_assets[user_id][coin]['total_cost']
+                        if current_amount > 0:
+                            sell_ratio = order['amount'] / current_amount
+                            new_total_cost = current_total_cost * (1 - sell_ratio)
+                        else:
+                            new_total_cost = 0.0
+                        user_assets[user_id][coin]['amount'] -= order['amount']
+                        user_assets[user_id][coin]['total_cost'] = new_total_cost
                         user_balance[user_id] += net_income
                         logger.info(f"[Order] 卖出挂单成交: {order['order_id']} {order['coin']} x{order['amount']} @ {order['price']}")
                     else:
@@ -738,8 +753,8 @@ def get_user_total_assets(user_id: str) -> float:
     """计算用户总资产"""
     init_user(user_id)
     total = user_balance[user_id]
-    for coin, amount in user_assets[user_id].items():
-        total += amount * get_coin_price(coin)
+    for coin, asset in user_assets[user_id].items():
+        total += asset['amount'] * get_coin_price(coin)
     return total
 
 
@@ -796,7 +811,13 @@ async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float
 
         # 执行兑换
         user_balance[user_id] -= total_with_fee
-        user_assets[user_id][coin] += amount
+        # 更新总成本
+        current_amount = user_assets[user_id][coin]['amount']
+        current_total_cost = user_assets[user_id][coin]['total_cost']
+        new_amount = current_amount + amount
+        new_total_cost = current_total_cost + amount * price
+        user_assets[user_id][coin]['amount'] = new_amount
+        user_assets[user_id][coin]['total_cost'] = new_total_cost
 
         result = f"✅ 兑换成功！\n"
         result += f"━━━━━━━━━━━━━━\n"
@@ -859,8 +880,8 @@ async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: floa
 
     # 立即回收（price=0或不填）
     if price == 0.0:
-        if user_assets[user_id][coin] < amount:
-            yield event.plain_result(f"❌ {coin} 持有数量不足！当前持有: {user_assets[user_id][coin]:.2f}")
+        if user_assets[user_id][coin]['amount'] < amount:
+            yield event.plain_result(f"❌ {coin} 持有数量不足！当前持有: {user_assets[user_id][coin]['amount']:.2f}")
             return
 
         price = current_price
@@ -869,7 +890,16 @@ async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: floa
         net_income = total_income - fee
 
         # 执行回收
-        user_assets[user_id][coin] -= amount
+        # 按比例更新总成本
+        current_amount = user_assets[user_id][coin]['amount']
+        current_total_cost = user_assets[user_id][coin]['total_cost']
+        if current_amount > 0:
+            sell_ratio = amount / current_amount
+            new_total_cost = current_total_cost * (1 - sell_ratio)
+        else:
+            new_total_cost = 0.0
+        user_assets[user_id][coin]['amount'] -= amount
+        user_assets[user_id][coin]['total_cost'] = new_total_cost
         user_balance[user_id] += net_income
 
         result = f"✅ 回收成功！\n"
@@ -931,11 +961,22 @@ async def bi_assets(event: AstrMessageEvent):
     result += f"🎁 收集品:\n"
     has_holdings = False
     for coin in COINS:
-        amount = user_assets[user_id][coin]
+        asset = user_assets[user_id][coin]
+        amount = asset['amount']
         if amount > 0:
             price = get_coin_price(coin)
             value = amount * price
-            result += f"• {coin}: {amount:.2f} 个 (价值: {value:.2f})\n"
+            # 计算浮动盈亏（考虑卖出手续费）
+            # 动态计算平均成本
+            avg_cost = asset['total_cost'] / amount if amount > 0 else 0.0
+            cost = amount * avg_cost
+            gross_profit = value - cost
+            # 计算卖出手续费
+            sell_fee = value * SELL_FEE
+            net_profit = gross_profit - sell_fee
+            # 格式化显示
+            profit_str = f"+{net_profit:.2f}" if net_profit >= 0 else f"{net_profit:.2f}"
+            result += f"• {coin}: {amount:.2f} 个 (价值: {value:.2f}) 盈亏: {profit_str}\n"
             has_holdings = True
 
     if not has_holdings:
