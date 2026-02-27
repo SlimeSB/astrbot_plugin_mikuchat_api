@@ -5,6 +5,7 @@ from astrbot.api import logger
 from astrbot.core.platform import MessageType
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.api.star import Context
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 import random
 import time
@@ -16,8 +17,14 @@ from typing import Dict, List, Optional
 
 from .mikuchat_html_render import template_to_pic
 
-# 数据文件路径
-DATA_FILE = Path(__file__).parent / "bi_data.json"
+# 数据文件路径 - 使用 AstrBot 插件专用目录，在初始化时设置
+DATA_FILE: Optional[Path] = None
+
+
+def set_plugin_path(plugin_name: str):
+    """设置数据文件路径，由插件类在初始化时调用"""
+    global DATA_FILE
+    DATA_FILE = Path(get_astrbot_data_path()) / "plugin_data" / plugin_name / "bi_data.json"
 
 # 虚拟币交易系统 - 轻量化版本
 
@@ -511,7 +518,14 @@ def save_bi_data():
     """保存所有数据到JSON文件"""
     global market_prices, market_history, user_assets, user_balance, pending_orders, current_volatility
 
+    if DATA_FILE is None:
+        logger.warning("[Data] 数据文件路径未设置，跳过保存")
+        return
+
     try:
+        # 确保数据目录存在
+        DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+
         # 转换datetime对象为字符串
         serializable_pending_orders = {}
         for user_id, orders in pending_orders.items():
@@ -553,6 +567,10 @@ def save_bi_data():
 def load_bi_data():
     """从JSON文件加载数据"""
     global market_prices, market_history, user_assets, user_balance, pending_orders, current_volatility
+
+    if DATA_FILE is None:
+        logger.warning("[Data] 数据文件路径未设置，跳过加载")
+        return
 
     if not DATA_FILE.exists():
         logger.info("[Data] 数据文件不存在，使用初始数据")
