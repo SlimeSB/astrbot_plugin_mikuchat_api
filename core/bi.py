@@ -65,7 +65,7 @@ def init_database():
         logger.error(f"[Database] 数据库初始化失败: {e}")
 
 
-def add_price_record(coin: str, price: float, timestamp: datetime = None):
+def add_price_record(coin: str, price: float, timestamp: Optional[datetime] = None):
     """添加价格记录到数据库"""
     global DB_FILE
     if DB_FILE is None:
@@ -85,7 +85,7 @@ def add_price_record(coin: str, price: float, timestamp: datetime = None):
         logger.error(f"[Database] 添加价格记录失败: {e}")
 
 
-def get_price_history(coin: str, start_time: datetime = None, end_time: datetime = None, limit: int = None):
+def get_price_history(coin: str, start_time: Optional[datetime] = None, end_time: Optional[datetime] = None, limit: Optional[int] = None):
     """从数据库获取价格历史
     
     Args:
@@ -1158,7 +1158,7 @@ async def bi_history(self, event: AstrMessageEvent, coin: str, timeframe: int = 
     minutes_per_kline = timeframe
     kline_count = 25  # 固定绘制25条K线
     
-    # 计算需要查询的时间范围（使用对齐到整分钟的时间）
+    # 计算需要查询的时间范围（对齐到整分钟）
     total_minutes_needed = minutes_per_kline * kline_count
     end_time = datetime.now().replace(second=0, microsecond=0)
     start_time = end_time - timedelta(minutes=total_minutes_needed)
