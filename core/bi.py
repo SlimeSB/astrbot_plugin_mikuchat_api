@@ -72,6 +72,15 @@ UPDATE_INTERVAL = 120  # 2分钟更新一次
 BUY_FEE = 0.001  # 0.1% 买入手续费
 SELL_FEE = 0.02  # 2% 卖出手续费
 
+# 均值回归参数
+MEAN_REVERSION_STRENGTH = 0.1  # 均值回归强度（0-1之间，越大回归越快）
+
+# 动态均值上升参数
+MEAN_GROWTH_RATE = 0.0001  # 均值每次更新增长初始价格的 0.01%（线性增长）
+
+# 动态均值存储
+dynamic_means = INITIAL_PRICES.copy()  # 初始均值为初始价格
+
 # 随机事件参数
 EVENT_TRIGGER_PROBABILITY = 0.15  # 15%概率触发
 EVENT_COOLDOWN = 1200  # 事件冷却时间20分钟
@@ -327,12 +336,17 @@ async def _call_llm_simple(system_prompt: str, user_prompt: str) -> str:
 
 def _apply_price_change(coin: str, change_percent: float):
     """应用价格变动"""
-    global market_prices, market_history
+    global market_prices, market_history, dynamic_means
     
     with market_update_lock:
         old_price = market_prices[coin]
         new_price = old_price * (1 + change_percent)
         market_prices[coin] = max(0.01, new_price)
+        
+        # 同时调整动态均值，保持价格和均值的一致性
+        old_mean = dynamic_means[coin]
+        new_mean = old_mean * (1 + change_percent)
+        dynamic_means[coin] = new_mean
         
         # 记录价格历史
         market_history[coin].append({
@@ -340,12 +354,13 @@ def _apply_price_change(coin: str, change_percent: float):
             'price': market_prices[coin],
             'change_percent': change_percent,
             'volatility': current_volatility[coin],
-            'event_triggered': True
+            'event_triggered': True,
+            'current_mean': new_mean
         })
         if len(market_history[coin]) > MAX_HISTORY_SIZE:
             market_history[coin] = market_history[coin][-MAX_HISTORY_SIZE:]
         
-        logger.info(f"[Event] {coin}积分变动: {old_price:.2f} → {market_prices[coin]:.2f} ({change_percent*100:+.1f}%)")
+        logger.info(f"[Event] {coin}积分变动: {old_price:.2f} → {market_prices[coin]:.2f} ({change_percent*100:+.1f}%) | 均值: {old_mean:.2f} → {new_mean:.2f}")
 
 
 def _apply_event_fallback(coin: str, change_percent: float) -> str:
@@ -716,30 +731,47 @@ def update_volatility():
 
 
 def update_market_prices():
-    """更新积分（使用动态变化度）"""
+    """更新积分（使用动态变化度 + 均值回归 + 动态均值上升）"""
     global market_prices, last_update_time
-
-    # 移除时间检查，由后台线程控制频率
 
     for coin in COINS:
         # 获取该收集品的动态变化度
         coin_volatility = current_volatility[coin]
+        current_price = market_prices[coin]
+        
+        # 1. 更新动态均值（线性增长）
+        # 每次增加初始价格的固定比例，实现线性增长
+        dynamic_means[coin] += INITIAL_PRICES[coin] * MEAN_GROWTH_RATE
+        current_mean = dynamic_means[coin]
 
-        # 随机积分变化（基于动态变化度）
-        change_percent = random.uniform(-coin_volatility, coin_volatility)
-        new_price = market_prices[coin] * (1 + change_percent)
+        # 2. 随机波动（无漂移）
+        random_change = random.uniform(-coin_volatility, coin_volatility)
+
+        # 3. 均值回归：当价格偏离当前均值时，产生回归倾向
+        # 计算偏离程度（正数表示高于均值，负数表示低于均值）
+        deviation = (current_price - current_mean) / current_mean
+        # 回归力：偏离越大，回归越强（负偏离时向上拉，正偏离时向下拉）
+        reversion_force = -deviation * MEAN_REVERSION_STRENGTH
+
+        # 4. 综合变动 = 随机波动 + 均值回归
+        total_change = random_change + reversion_force
+
+        # 5. 计算新价格
+        new_price = current_price * (1 + total_change)
         market_prices[coin] = max(0.01, new_price)  # 防止积分归零
 
         # 记录积分历史
         market_history[coin].append({
             'timestamp': datetime.now(),
             'price': market_prices[coin],
-            'change_percent': change_percent,
-            'volatility': coin_volatility  # 记录当前变化度
+            'change_percent': total_change,
+            'volatility': coin_volatility,
+            'reversion_force': reversion_force,
+            'current_mean': current_mean
         })
         if len(market_history[coin]) > MAX_HISTORY_SIZE:
             market_history[coin] = market_history[coin][-MAX_HISTORY_SIZE:]
-    
+
     last_update_time = time.time()
 
 
