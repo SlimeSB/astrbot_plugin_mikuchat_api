@@ -2,10 +2,30 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api import logger
 from astrbot.api.message_components import Image, Plain, Reply
 
-import httpx
+import httpx, re
 from mikuchat.apis import User, UserCheck
 from mikuchat.models import UserModel
 
+
+async def user_update_name(event: AstrMessageEvent, name: str, qq: int | None = None):
+    user_id = qq or event.get_sender_id()
+    logger.info(f"{user_id=}")
+    if not isinstance(user_id, int) and not user_id.isdigit():
+        logger.warning("用户ID不是数字")
+        raise ValueError("用户ID不是数字")
+    
+    if not re.match(r'^[a-zA-Z0-9_]+$', name):
+        logger.warning("昵称只能包含数字、字母和下划线")
+        raise ValueError("昵称只能包含数字、字母和下划线")
+    
+    async with httpx.AsyncClient() as client:
+        user = User(client=client)
+        await user.update_user_name(qq=int(user_id), name=name)
+        if user.error:
+            logger.warning("参数错误或账号不存在")
+            raise ValueError("参数错误或账号不存在")
+        
+        yield event.plain_result(f"更新用户{user_id}的用户名成功: {name}")    
 
 async def user_get(event: AstrMessageEvent, qq: int | None = None):
     user_id = qq or event.get_sender_id()
@@ -48,6 +68,18 @@ async def user_update_check(event: AstrMessageEvent, qq: int | None = None):
     
     async with httpx.AsyncClient() as client:
         user = User(client=client)
+        await user.get_user_info(qq=int(user_id))
+        data: list[UserModel] | UserModel | None = user.model.user
+        if data is None:
+            logger.error("用户信息获取失败")
+            raise ValueError("用户信息获取失败")
+        
+        if isinstance(data, UserModel) and data.name == "DEFAULT_USER_NAME":
+            logger.warning("用户未设置昵称")
+            raise ValueError("用户未设置昵称")
+    
+    async with httpx.AsyncClient() as client:
+        user = User(client=client)
         await user.update_user_check(qq=int(user_id))
         data: list[UserModel] | UserModel | None = user.model.user
 
@@ -82,6 +114,7 @@ async def user_check(event: AstrMessageEvent, qq: int):
         ])
 
 __all__ = [
+    "user_update_name",
     "user_get",
     "user_update_check",
     "user_check",

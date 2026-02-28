@@ -1,5 +1,5 @@
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.api import AstrBotConfig, logger
 from astrbot.core.platform.message_session import MessageSession
 
@@ -8,11 +8,16 @@ from .core.user import *
 from .core.bi import *
 from .core.bi import update_group_activity, set_plugin_context, set_whitelist_groups, get_whitelist_groups, save_bi_data, load_bi_data, set_plugin_path
 
-@register("MikuchatApi", "Yuuz12", "可调用MikuChat API", "1.4.3", "https://github.com/Yuuz12/astrbot_plugin_mikuchat_api")
+
 
 class UserPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
+
+    @filter.command("user_update_name")
+    async def user_update_name(self, event: AstrMessageEvent, name: str, qq: int | None = None):
+        async for msg in user_update_name(event, name, qq):
+            yield msg
 
     @filter.command("user_get")
     async def user_get(self, event: AstrMessageEvent, qq: int | None = None):
