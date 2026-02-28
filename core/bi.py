@@ -932,7 +932,7 @@ async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float
         total_with_fee = total_cost + fee
 
         if user_balance[user_id] < total_with_fee:
-            yield event.plain_result(f"❌ 糖果不足！需要 {total_with_fee:.2f}（含服务费 {fee:.2f}），当前糖果: {user_balance[user_id]:.2f}")
+            yield event.plain_result(f"❌ 积分不足！需要 {total_with_fee:.2f}（含服务费 {fee:.2f}），当前积分: {user_balance[user_id]:.2f}")
             return
 
         # 执行兑换
@@ -950,10 +950,10 @@ async def bi_buy(event: AstrMessageEvent, coin: str, amount: float, price: float
         result += f"收集品: {coin}\n"
         result += f"数量: {amount:.2f}\n"
         result += f"兑换积分: {price:.2f}\n"
-        result += f"消耗糖果: {total_cost:.2f}\n"
+        result += f"消耗积分: {total_cost:.2f}\n"
         result += f"服务费: {fee:.2f} ({BUY_FEE*100:.1f}%)\n"
         result += f"总消耗: {total_with_fee:.2f}\n"
-        result += f"剩余糖果: {user_balance[user_id]:.2f}"
+        result += f"剩余积分: {user_balance[user_id]:.2f}"
         yield event.plain_result(result)
     else:
         # 预约兑换，价格必须低于当前积分
@@ -1033,10 +1033,10 @@ async def bi_sell(event: AstrMessageEvent, coin: str, amount: float, price: floa
         result += f"收集品: {coin}\n"
         result += f"数量: {amount:.2f}\n"
         result += f"回收积分: {price:.2f}\n"
-        result += f"获得糖果: {total_income:.2f}\n"
+        result += f"获得积分: {total_income:.2f}\n"
         result += f"服务费: {fee:.2f} ({SELL_FEE*100:.1f}%)\n"
         result += f"净获得: {net_income:.2f}\n"
-        result += f"糖果余额: {user_balance[user_id]:.2f}"
+        result += f"积分余额: {user_balance[user_id]:.2f}"
         yield event.plain_result(result)
     else:
         # 预约回收，价格必须高于当前积分
@@ -1081,7 +1081,7 @@ async def bi_assets(event: AstrMessageEvent):
 
     result = f"💼 您的背包\n"
     result += f"━━━━━━━━━━━━━━\n"
-    result += f"🍬 糖果数量: {user_balance[user_id]:.2f}\n"
+    result += f"🍬 积分数量: {user_balance[user_id]:.2f}\n"
     result += f"📊 总价值: {total_assets:.2f}\n\n"
 
     result += f"🎁 收集品:\n"
@@ -1410,7 +1410,7 @@ async def bi_help(event: AstrMessageEvent):
     result += f"• bi_sell <收集品> <数量> [积分] - 回收收集品（积分可选，默认当前积分）\n"
 
     result += f"\n👤 背包命令:\n"
-    result += f"• bi_assets - 查看您的背包（糖果+收集品）\n"
+    result += f"• bi_assets - 查看您的背包（积分+收集品）\n"
     result += f"• bi_reset - 重置背包（需要管理员权限）\n"
 
     result += f"\n❓ 帮助命令:\n"
@@ -1421,7 +1421,7 @@ async def bi_help(event: AstrMessageEvent):
     result += f"• 不同收集品有差异化变化度（2%-10%）\n"
     result += f"• 兑换服务费: {BUY_FEE*100:.1f}%\n"
     result += f"• 回收服务费: {SELL_FEE*100:.1f}%\n"
-    result += f"• 初始糖果: 10000\n"
+    result += f"• 初始积分: 10000\n"
     result += f"• 可收集收集品: {', '.join(COINS)}"
 
     yield event.plain_result(result)
