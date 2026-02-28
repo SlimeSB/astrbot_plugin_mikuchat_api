@@ -74,7 +74,7 @@ class BiPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_message(self, event: AstrMessageEvent):
-        """监听所有消息，更新群聊活跃度"""
+        """监听所有群聊信息，更新群聊活跃度"""
         try:
             # 获取消息来源UMO
             umo: MessageSession = MessageSession.from_str(event.unified_msg_origin)
