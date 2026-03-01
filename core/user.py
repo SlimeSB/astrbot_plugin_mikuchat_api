@@ -2,7 +2,8 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api import logger
 from astrbot.api.message_components import Image, Plain, Reply
 
-import httpx, re
+import httpx
+import re
 from mikuchat.apis import User, UserCheck
 from mikuchat.models import UserModel
 
