@@ -153,7 +153,32 @@ class BiPlugin(Star):
     async def bi_history(self, event: AstrMessageEvent, coin: str, timeframe: int = 10):
         async for msg in bi_history(self, event, coin, timeframe):
             yield msg
-    
+
+    @filter.command("bi_contract_open")
+    async def bi_contract_open(self, event: AstrMessageEvent, coin: str, direction: str, amount: float, leverage: int = 0):
+        async for msg in bi_contract_open(event, coin, direction, amount, leverage):
+            yield msg
+
+    @filter.command("bi_contract_close")
+    async def bi_contract_close(self, event: AstrMessageEvent, position_id: str):
+        async for msg in bi_contract_close(event, position_id):
+            yield msg
+
+    @filter.command("bi_contract_positions")
+    async def bi_contract_positions(self, event: AstrMessageEvent):
+        async for msg in bi_contract_positions(event):
+            yield msg
+
+    @filter.command("bi_contract_history")
+    async def bi_contract_history(self, event: AstrMessageEvent, limit: int = 5):
+        async for msg in bi_contract_history(event, limit):
+            yield msg
+
+    @filter.command("bi_contract_funding")
+    async def bi_contract_funding(self, event: AstrMessageEvent):
+        async for msg in bi_contract_funding(event):
+            yield msg
+
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
         bi_stop_market_updates()
